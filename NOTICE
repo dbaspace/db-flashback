@@ -1,0 +1,15 @@
+db-flashback
+Copyright 2026
+
+This product includes ideas and on-disk format knowledge derived from:
+
+  PDU-PostgreSQLDataUnloader (PDU)
+  https://github.com/wublabdubdub/PDU-PostgreSQLDataUnloader
+  https://pduzc.com/
+  Licensed under the Apache License, Version 2.0
+
+Referenced areas (implemented in Go, not vendored C sources):
+  - info.c          offline PGDATA catalog bootstrap
+  - decode.c/read.c heap page / TOAST file decoding
+  - pg_walgettx.c   WAL time-range DELETE/UPDATE recovery
+  - dropscan_fs.c   leftover page scan after DROP TABLE

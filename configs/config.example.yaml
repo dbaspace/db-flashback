@@ -1,0 +1,75 @@
+http:
+  run_mode: release
+  host: 0.0.0.0
+  port: 8620
+  read_timeout_sec: 10
+  write_timeout_sec: 1800
+  log:
+    console: true
+    level: info
+    format: text
+
+# 本项目任务表（tbl_flashback_*），不是 Hub 元库
+db:
+  host: 127.0.0.1
+  port: 5432
+  user: flashback
+  password: change-me
+  dbname: db_flashback
+  sslmode: disable
+
+# instance_id 必须等于这里的 id
+instances:
+  - id: pg-self
+    db_type: postgres
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: change-me
+    vendor: ""
+    cloud_instance_id: ""
+    region: ""
+  - id: mysql-self
+    db_type: mysql
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    password: change-me
+  - id: pg-tencent
+    db_type: postgres
+    host: 10.0.0.1
+    port: 5432
+    user: postgres
+    password: change-me
+    vendor: tencent
+    cloud_instance_id: postgres-xxxx
+    region: ap-guangzhou
+
+flashback:
+  workdir: /tmp/db-flashback
+  # 离线 PDU 把远程库的 PGDATA / WAL 拷到这台服务盘后再解析。默认 {workdir}/offline/{实例}/<时间ms>/
+  offline_root: /tmp/db-flashback/offline
+  # 跨机拉取需要服务与实例 SSH 互信（BatchMode）；同机部署不需要。可空=实例库用户 / 22
+  ssh_user: postgres
+  ssh_port: 22
+  # 与 Hub global_args 同一套 key。也可用环境变量覆盖：
+  # FLASHBACK_TENCENT_SECRET_ID / FLASHBACK_TENCENT_SECRET_KEY
+  # FLASHBACK_ALIYUN_ACCESS_KEY_ID / FLASHBACK_ALIYUN_ACCESS_KEY_SECRET
+  # FLASHBACK_HUAWEI_ACCESS_KEY_ID / FLASHBACK_HUAWEI_SECRET_ACCESS_KEY
+  # FLASHBACK_AWS_ACCESS_KEY_ID / FLASHBACK_AWS_SECRET_ACCESS_KEY
+  args:
+    flashback_tencent_secret_id: ""
+    flashback_tencent_secret_key: ""
+    flashback_tencent_region: ""
+    flashback_tencent_region_map: ""
+    flashback_aliyun_access_key_id: ""
+    flashback_aliyun_access_key_secret: ""
+    flashback_huawei_access_key_id: ""
+    flashback_huawei_secret_access_key: ""
+    flashback_aws_access_key_id: ""
+    flashback_aws_secret_access_key: ""
+    flashback_cloud_wal_lookback_hours: "2"
+    flashback_cloud_download_mbps: "16"
+    flashback_cloud_api_interval_ms: "400"
+    flashback_cloud_max_packages: "48"
+    flashback_cloud_pkg_retries: "3"

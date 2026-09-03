@@ -1,0 +1,9 @@
+/db-flashback
+*.exe
+*.out
+*.bin
+.idea/
+.vscode/
+configs/config.yaml
+configs/config.local.yaml
+logs/
