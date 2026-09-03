@@ -9,7 +9,7 @@ http:
     level: info
     format: text
 
-# 本项目任务表（tbl_flashback_*），不是 Hub 元库
+# 本项目任务表（tbl_flashback_*）
 db:
   host: 127.0.0.1
   port: 5432
@@ -52,7 +52,7 @@ flashback:
   # 跨机拉取需要服务与实例 SSH 互信（BatchMode）；同机部署不需要。可空=实例库用户 / 22
   ssh_user: postgres
   ssh_port: 22
-  # 与 Hub global_args 同一套 key。也可用环境变量覆盖：
+  # 多云参数，也可用环境变量覆盖：
   # FLASHBACK_TENCENT_SECRET_ID / FLASHBACK_TENCENT_SECRET_KEY
   # FLASHBACK_ALIYUN_ACCESS_KEY_ID / FLASHBACK_ALIYUN_ACCESS_KEY_SECRET
   # FLASHBACK_HUAWEI_ACCESS_KEY_ID / FLASHBACK_HUAWEI_SECRET_ACCESS_KEY
