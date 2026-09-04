@@ -69,7 +69,7 @@ func TestFlashbackSchemaNotReadyErr(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "tbl_flashback_tasks") || !strings.Contains(msg, "change/sql/tbl_flashback.sql") {
+	if !strings.Contains(msg, "tbl_flashback_tasks") || !strings.Contains(msg, "change/sql/") {
 		t.Fatalf("msg=%q", msg)
 	}
 	if strings.Contains(msg, "tbl_flashback_tasks") && strings.Contains(msg, "CREATE TABLE tbl_flashback_tasks") {

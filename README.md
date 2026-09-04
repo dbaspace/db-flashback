@@ -13,6 +13,7 @@
 - 误删、误改后，要按主键或整行把数据「变回去」
 - 只想看这段时间发生了什么 DML / DDL，做审计或对账
 - 云上 PostgreSQL 拿不到宿主机 `pg_wal`，但日志备份还在
+- 云 MySQL 只要实例上还能 BINLOG DUMP（已开本地 binlog），与自建同一套闪回
 - 实例已不可连，只剩本机 / 拷来的 PGDATA、WAL 目录
 
 不适合：把本服务当成自动回滚机器人。它不提交工单、不在目标库执行生成的 SQL、同一时刻只跑一个闪回任务。
@@ -24,7 +25,8 @@
 | 自建 PostgreSQL 在线 | 连实例读 `pg_wal` / 归档，按 LSN 与事务 COMMIT 时间裁窗 |
 | 腾讯云 PostgreSQL | 按时间窗拉取云上增量日志备份再解析（`vendor=tencent`，`cloud_instance_id=postgres-xxxx`） |
 | PDU 离线 | 只读本机 PGDATA / WAL 副本：WAL 删除、WAL 更新前值、卸数、DROP TABLE 碎页扫描 |
-| 自建 MySQL | 解析 row 格式 binlog，按时间窗与位点出 SQL |
+| 自建 MySQL | 在线 BINLOG DUMP，ROW + `binlog_row_image=FULL`，按时间窗与位点出 SQL |
+| 云 MySQL | 同一套在线 DUMP，不按厂商拆路径。需控制台开放本地 binlog / 复制权限，账号具备 REPLICATION 相关权限 |
 
 范围：空表列表 = 整库，一行 = 单表，多行 = 多表。输出可选 Undo SQL 或原始 Redo SQL；PDU 还可导出 CSV。
 
@@ -32,7 +34,23 @@
 
 ## 平台功能介绍
 
-控制台无登录页，打开即用。侧栏五个入口，对应一次闪回从「登记地址」到「拿走 SQL」的工作台。
+打开控制台需登录。首次启动若库中还没有账号，会写入默认用户 `admin` / `flashback`（密码 bcrypt 哈希存储）。登录后请立刻改密。侧栏首页是仪表盘，其后可管理登录用户、登记地址并跑闪回。
+
+### 仪表盘
+
+登录后默认进入（`#/`）。汇总闪回次数、成功率、恢复数据量（成功任务 WAL 字节）、待处理队列，以及近 7 日成功/失败柱状图、工作目录磁盘与库连接健康、最近任务。快速闪回会带上实例、库、表和时间窗跳到「闪回任务」走预检查。查看需仪表盘权限；发起快速闪回还需闪回任务的操作权限。
+
+### 登录与用户
+
+- 账号存在 `tbl_flashback_users`，会话在 `tbl_flashback_sessions`，Cookie `flashback_sid`（HttpOnly，24 小时）。
+- 顶栏可改密、退出。改密须校验原密码，新密码至少 6 位。
+- `admin` 是管理员，拥有全部页面的查看与操作权限。
+- 新加账号默认无页面权限。管理员在「登录用户」点「授权」，按页授予「查看」或「操作」。
+- 查看只能进页面看数据；操作才能新增、保存、删除、预检查、自测。侧栏和接口都会按权限拦截。
+- 仅管理员可添加/删除普通账号；不能删除或改 admin 的权限。
+- 管理员可在「登录用户」启用或禁用普通账号（`PUT /auth/users/:username/status`）。禁用后立即清会话，该账号无法再登录；不能禁用 admin。
+- 普通用户连续输错密码 3 次会锁定，须管理员点「解锁」（`PUT /auth/users/:username/unlock`）后才能再登录；`admin` 不参与锁定。启用账号时也会一并解锁并清零失败次数。
+- 未登录时接口返回 401，静态页与 `/healthz` 仍可访问。
 
 ### 闪回任务
 
@@ -57,11 +75,11 @@
 
 ### 实例地址
 
-目标库的唯一入口。任务页不手填 host/port。支持 PostgreSQL / MySQL，自建或腾讯云（补 vendor、云产品 ID、Region）。保存在本项目表，YAML 仅作兜底。
+目标库的唯一入口。任务页不手填 host/port。支持 PostgreSQL / MySQL，自建或腾讯云（补 vendor、云产品 ID、Region）。保存在 `tbl_flashback_instances`，不使用 `config.yaml`。
 
 ### 运维中心
 
-多云密钥与下载参数（SecretId/SecretKey、默认 Region、拉取限速等）。保存到 `tbl_flashback_args` 立即生效，读取顺序：数据库 > 环境变量 > YAML。不要把密钥提交进仓库。
+多云密钥与下载参数（SecretId/SecretKey、默认 Region、拉取限速等）。密钥类落库加密，页面不回显明文，留空保存表示保留原值。读取顺序：数据库 > 环境变量 > YAML。不要把密钥提交进仓库。
 
 ### 工具与集成
 
@@ -78,14 +96,23 @@ PostgreSQL 建议在误操作前对目标表执行 `ALTER TABLE … REPLICA IDEN
 
 ## 启动
 
-1. 准备独立 Postgres，执行 [change/sql/tbl_flashback.sql](change/sql/tbl_flashback.sql)（进程不自动建表）。
-2. 复制配置并改地址、账号（不要把云密钥提交进仓库）：
+1. 准备独立 Postgres，执行 `change/sql/` 下全部脚本（任务、日志、SQL、参数、实例地址、PDU 产物）：
+
+```bash
+for f in change/sql/*.sql; do
+  psql -h "$PGHOST" -U flashback -d db_flashback -f "$f"
+done
+```
+
+包含：[tbl_flashback.sql](change/sql/tbl_flashback.sql)、[tbl_flashback_alter_progress.sql](change/sql/tbl_flashback_alter_progress.sql)、[tbl_flashback_args.sql](change/sql/tbl_flashback_args.sql)、[tbl_flashback_instances.sql](change/sql/tbl_flashback_instances.sql)、[tbl_flashback_pdu.sql](change/sql/tbl_flashback_pdu.sql)、[tbl_flashback_users.sql](change/sql/tbl_flashback_users.sql)。用户表也可由进程 `CREATE IF NOT EXISTS`。
+
+2. 复制配置，只改本服务监听和元库账号（目标实例到控制台「实例地址」添加，不要把云密钥提交进仓库）：
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
 ```
 
-3. 启动：
+3. 启动。`flashback.data_key` 默认为空，**仅第一次启动**会生成并写回配置（等价于 `openssl rand -hex 32`）。之后沿用文件里的值。也可事先设置环境变量 `FLASHBACK_DATA_KEY`（优先于配置）。不要把真实密钥提交进仓库。
 
 ```bash
 go run . svr -c configs/config.yaml
@@ -95,7 +122,13 @@ go run . svr -c configs/config.yaml
 
 ## 接口
 
-前缀 `/api/v1/flashback`：
+前缀 `/api/v1/flashback`（除登录外需会话）：
+
+- `POST /api/v1/flashback/auth/login`
+- `POST /api/v1/flashback/auth/logout`
+- `GET /api/v1/flashback/auth/me`
+- `PUT /api/v1/flashback/auth/password`
+- `GET/POST /api/v1/flashback/auth/users`、`PUT /api/v1/flashback/auth/users/:username/perms`、`DELETE /api/v1/flashback/auth/users/:username`
 
 - `POST /api/v1/flashback/tasks/precheck`
 - `POST /api/v1/flashback/tasks`
@@ -110,14 +143,14 @@ go run . svr -c configs/config.yaml
 
 ## 配置要点
 
-- `db`：闪回任务 / 日志 / SQL。
-- `instances`：YAML 里的目标库；控制台「实例地址」优先。
-- `flashback.args`：多云参数。控制台「运维中心」可编辑，保存到 `tbl_flashback_args`，立即生效。读取顺序：数据库 > 环境变量 > YAML。
+- `db`：本服务元库（任务 / 日志 / SQL / 实例地址 / 登录账号）。
+- 控制台登录：默认 `admin` / `flashback`，仅库中无用户时写入一次。登录密码 bcrypt 存储，与实例库密码的 AES 加密分开。
+- 目标实例：只在控制台「实例地址」增删改，不写 `config.yaml`。用户和密码落库前 AES-GCM 加密。
+- `flashback.data_key`：默认为空。第一次启动自动生成并写入配置文件；环境变量 `FLASHBACK_DATA_KEY` 优先。用于加密实例账号与云密钥。不要提交真实密钥。
+- `flashback.args`：多云参数兜底。密钥类（SecretId/SecretKey）落库加密，Region / 限速等仍明文。读取顺序：数据库 > 环境变量 > YAML。
 
 ## 腾讯云 PostgreSQL
 
 1. 控制台「运维中心」填写腾讯云 `SecretId` / `SecretKey`，以及默认 Region（如 `ap-guangzhou`）。也可用环境变量 `FLASHBACK_TENCENT_SECRET_ID`、`FLASHBACK_TENCENT_SECRET_KEY`。
 2. 「实例地址」新增目标库：`db_type=postgres`，`vendor=tencent`，`cloud_instance_id` 填云产品 ID（`postgres-xxxx`），`region` 与实例所在地域一致。
 3. 云侧需已开启日志备份且保留覆盖任务时间窗。预检查会列举 finished 增量包，执行时按时间窗下载再解析。
-
-YAML 示例见 `configs/config.example.yaml` 里的 `pg-tencent`。

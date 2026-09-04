@@ -23,6 +23,58 @@ func flashbackWriteOK(c *gin.Context, result any) {
 	})
 }
 
+func RequireAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name, err := service.ResolveSessionUser(c)
+		if err != nil || strings.TrimSpace(name) == "" {
+			if err == nil {
+				err = errUnauthorized
+			}
+			response.Resp401Error(c.Writer, err)
+			c.Abort()
+			return
+		}
+		c.Set(service.FlashbackCtxUser, name)
+		c.Next()
+	}
+}
+
+func RequirePage(page, need string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := service.RequirePagePerm(c, page, need); err != nil {
+			if err.Error() == "未登录" {
+				response.Resp401Error(c.Writer, err)
+			} else {
+				response.Resp403Error(c.Writer, err)
+			}
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func RequirePageAny(need string, pages ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := service.RequirePagePermAny(c, need, pages...); err != nil {
+			if err.Error() == "未登录" {
+				response.Resp401Error(c.Writer, err)
+			} else {
+				response.Resp403Error(c.Writer, err)
+			}
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+var errUnauthorized = errPlain("未登录")
+
+type errPlain string
+
+func (e errPlain) Error() string { return string(e) }
+
 func (h *FlashbackHandler) ListInstances(c *gin.Context) {
 	flashbackWriteOK(c, service.NewFlashbackImpl().ListInstances(c.Request.Context()))
 }
@@ -121,6 +173,15 @@ func (h *FlashbackHandler) List(c *gin.Context) {
 	flashbackWriteOK(c, data)
 }
 
+func (h *FlashbackHandler) Dashboard(c *gin.Context) {
+	data, err := service.NewFlashbackImpl().Dashboard(c)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
 func (h *FlashbackHandler) Get(c *gin.Context) {
 	data, err := service.NewFlashbackImpl().Get(c, c.Param("id"))
 	if err != nil {
@@ -188,4 +249,116 @@ func (h *FlashbackHandler) GetArtifact(c *gin.Context) {
 	if c.Writer.Status() == 0 {
 		c.Status(http.StatusOK)
 	}
+}
+
+func (h *FlashbackHandler) Login(c *gin.Context) {
+	req := &dto.FlashbackLoginReq{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	data, err := service.NewFlashbackImpl().Login(c, req)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) Logout(c *gin.Context) {
+	if err := service.NewFlashbackImpl().Logout(c); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, gin.H{"ok": true})
+}
+
+func (h *FlashbackHandler) Me(c *gin.Context) {
+	data, err := service.NewFlashbackImpl().Me(c)
+	if err != nil {
+		response.Resp401Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) ChangePassword(c *gin.Context) {
+	req := &dto.FlashbackPasswordReq{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	if err := service.NewFlashbackImpl().ChangePassword(c, req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, gin.H{"ok": true})
+}
+
+func (h *FlashbackHandler) ListUsers(c *gin.Context) {
+	data, err := service.NewFlashbackImpl().ListUsers(c)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) CreateUser(c *gin.Context) {
+	req := &dto.FlashbackUserCreate{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	data, err := service.NewFlashbackImpl().CreateUser(c, req)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) DeleteUser(c *gin.Context) {
+	if err := service.NewFlashbackImpl().DeleteUser(c, c.Param("username")); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, gin.H{"ok": true})
+}
+
+func (h *FlashbackHandler) SaveUserPerms(c *gin.Context) {
+	req := &dto.FlashbackUserPermsSave{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	data, err := service.NewFlashbackImpl().SaveUserPerms(c, c.Param("username"), req)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) SetUserEnabled(c *gin.Context) {
+	req := &dto.FlashbackUserStatusSave{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	data, err := service.NewFlashbackImpl().SetUserEnabled(c, c.Param("username"), req.Enabled)
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
+}
+
+func (h *FlashbackHandler) UnlockUser(c *gin.Context) {
+	data, err := service.NewFlashbackImpl().UnlockUser(c, c.Param("username"))
+	if err != nil {
+		response.Resp400Error(c.Writer, err)
+		return
+	}
+	flashbackWriteOK(c, data)
 }

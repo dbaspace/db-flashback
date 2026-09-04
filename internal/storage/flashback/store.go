@@ -19,7 +19,7 @@ func (Store) db() *sql.DB { return databases.GetRawDB() }
 // NewID 生成任务主键。
 func NewID() string { return v7.NewUUIDv7() }
 
-// 闪回表只由人工执行 change/sql/tbl_flashback.sql 维护，运行时不建表、不建索引。
+// 闪回表由人工执行 change/sql/ 下全部脚本维护。
 var flashbackRequiredTables = []string{
 	"tbl_flashback_tasks",
 	"tbl_flashback_logs",
@@ -40,7 +40,7 @@ func collectMissingFlashbackTables(found map[string]bool) []string {
 }
 
 func flashbackSchemaNotReadyErr(missing []string) error {
-	return fmt.Errorf("闪回表未就绪（缺 %s），请先由 DBA 执行 change/sql/tbl_flashback.sql", strings.Join(missing, ", "))
+	return fmt.Errorf("闪回表未就绪（缺 %s），请先执行 change/sql/ 下全部脚本", strings.Join(missing, ", "))
 }
 
 var flashbackRequiredTaskCols = []string{
@@ -110,6 +110,9 @@ func (s Store) EnsureSchema(ctx context.Context) error {
 	}
 	if err := s.EnsureInstancesTable(ctx); err != nil {
 		return fmt.Errorf("ensure tbl_flashback_instances: %w", err)
+	}
+	if err := s.EnsureUsersTable(ctx); err != nil {
+		return fmt.Errorf("ensure tbl_flashback_users: %w", err)
 	}
 	if err := s.EnsurePDUSchema(ctx); err != nil {
 		return fmt.Errorf("ensure pdu columns: %w", err)

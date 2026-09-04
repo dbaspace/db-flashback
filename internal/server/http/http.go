@@ -63,6 +63,7 @@ func registerWebUI(engine *gin.Engine) {
 	engine.GET("/", serve("index.html", "text/html; charset=utf-8"))
 	engine.GET("/app.css", serve("app.css", "text/css; charset=utf-8"))
 	engine.GET("/app.js", serve("app.js", "application/javascript; charset=utf-8"))
+	engine.GET("/login-bg.jpg", serve("login-bg.jpg", "image/jpeg"))
 }
 
 func (s *HTTP) Run() error {

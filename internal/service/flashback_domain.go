@@ -135,17 +135,7 @@ func flashbackQueryDomainEntByMDM(_ context.Context, mdmID string) []*ent.Domain
 	if inst, err := lookupConfiguredInstance(mdmID); err == nil {
 		return []*ent.DomainInstance{instanceToDomain(inst)}
 	}
-	cfg := runtimeConfig()
-	if cfg == nil {
-		return nil
-	}
-	var out []*ent.DomainInstance
-	for _, inst := range cfg.Instances {
-		if strings.TrimSpace(inst.CloudInstanceID) == mdmID {
-			out = append(out, instanceToDomain(inst))
-		}
-	}
-	return out
+	return nil
 }
 
 func flashbackLookupDomainInstance(ctx context.Context, instanceID, host string, port int) (*ent.DomainInstance, error) {

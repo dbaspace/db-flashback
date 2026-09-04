@@ -316,3 +316,101 @@ type FlashbackSubmitDMLReq struct {
 	ReviewerUsername string `json:"reviewer_username,omitempty"`
 	Description      string `json:"description,omitempty"`
 }
+
+type FlashbackLoginReq struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type FlashbackPageInfo struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+type FlashbackLoginView struct {
+	Username string              `json:"username"`
+	Role     string              `json:"role"`
+	IsAdmin  bool                `json:"is_admin"`
+	Perms    map[string]string   `json:"perms"`
+	Pages    []FlashbackPageInfo `json:"pages"`
+}
+
+type FlashbackPasswordReq struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+type FlashbackUserView struct {
+	Username       string            `json:"username"`
+	Role           string            `json:"role"`
+	IsAdmin        bool              `json:"is_admin"`
+	Enabled        bool              `json:"enabled"`
+	Locked         bool              `json:"locked"`
+	LoginFailCount int               `json:"login_fail_count"`
+	Perms          map[string]string `json:"perms"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+}
+
+type FlashbackUserStatusSave struct {
+	Enabled bool `json:"enabled"`
+}
+
+type FlashbackUserPermsSave struct {
+	Perms map[string]string `json:"perms"`
+}
+
+type FlashbackUserCreate struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type FlashbackDashboard struct {
+	Total          int                       `json:"total"`
+	Succeeded      int                       `json:"succeeded"`
+	Failed         int                       `json:"failed"`
+	Pending        int                       `json:"pending"`
+	SuccessRate    float64                   `json:"success_rate"`
+	TodayCount     int                       `json:"today_count"`
+	YesterdayCount int                       `json:"yesterday_count"`
+	TodayDeltaPct  *float64                  `json:"today_delta_pct,omitempty"`
+	WALBytes       int64                     `json:"wal_bytes"`
+	WeekWALBytes   int64                     `json:"week_wal_bytes"`
+	PrevWeekWAL    int64                     `json:"prev_week_wal_bytes"`
+	WeekDeltaPct   *float64                  `json:"week_delta_pct,omitempty"`
+	Days           []FlashbackDashboardDay   `json:"days"`
+	Recent         []FlashbackDashboardTask  `json:"recent"`
+	Storage        FlashbackDashboardStorage `json:"storage"`
+	Health         FlashbackDashboardHealth  `json:"health"`
+}
+
+type FlashbackDashboardDay struct {
+	Date      string `json:"date"`
+	Label     string `json:"label"`
+	Succeeded int    `json:"succeeded"`
+	Failed    int    `json:"failed"`
+}
+
+type FlashbackDashboardTask struct {
+	ID        string    `json:"id"`
+	Tables    []string  `json:"tables"`
+	Database  string    `json:"database"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type FlashbackDashboardStorage struct {
+	UsedBytes    uint64 `json:"used_bytes"`
+	TotalBytes   uint64 `json:"total_bytes"`
+	FreeBytes    uint64 `json:"free_bytes"`
+	UsedPercent  int    `json:"used_percent"`
+	WorkDirBytes uint64 `json:"workdir_bytes"`
+	WorkDir      string `json:"workdir"`
+}
+
+type FlashbackDashboardHealth struct {
+	OpenConns int  `json:"open_conns"`
+	MaxConns  int  `json:"max_conns"`
+	PingMS    int  `json:"ping_ms"`
+	Available bool `json:"available"`
+}

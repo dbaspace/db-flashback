@@ -23,6 +23,14 @@ var svrCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		log.Logger().Sugar().Infow("configuration loaded", "port", cfg.HTTP.Port)
+		generated, err := config.EnsureDataKey(cfg, configFilePath())
+		if err != nil {
+			slog.Error("failed to ensure data_key", "error", err)
+			os.Exit(1)
+		}
+		if generated {
+			log.Logger().Sugar().Infow("generated flashback.data_key and wrote it to config (first start only)", "path", configFilePath())
+		}
 
 		srv, err := server.NewSvr(cfg)
 		if err != nil {

@@ -1,6 +1,4 @@
--- PostgreSQL 自建闪回任务（Hub 元库）
--- 表结构由 DBA 人工维护（生产属主 qtx_postgres）。Hub 进程不自动建表/建索引。
--- 部署：用建表账号执行本脚本后，预检查 / 创任务 / SQL 预览接口才可落库。
+-- 闪回任务 / 日志 / SQL。部署时执行 change/sql/ 下全部脚本。
 CREATE TABLE IF NOT EXISTS tbl_flashback_tasks (
     id               VARCHAR(64)  PRIMARY KEY,
     instance_id      VARCHAR(64)  NOT NULL,

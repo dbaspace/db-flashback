@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"db-flashback/internal/config"
+	secrypto "db-flashback/internal/crypto"
 	"db-flashback/internal/service/dto"
 	"db-flashback/internal/storage/flashback"
 	"db-flashback/pkg/utils/log"
@@ -58,32 +59,18 @@ func instanceViewFromRow(r flashback.InstanceRow) dto.FlashbackInstanceView {
 	return instanceViewFromConfig(instanceRowToConfig(r), "db")
 }
 
-// ListInstances 数据库地址优先，其次 YAML。任务只引用 id。
+// ListInstances 只读地址库。任务只引用 id。
 func (s *FlashbackImpl) ListInstances(ctx context.Context) []dto.FlashbackInstanceView {
-	seen := map[string]dto.FlashbackInstanceView{}
-	if rows, err := s.store.ListInstances(ctx); err == nil {
-		for _, r := range rows {
-			if strings.TrimSpace(r.ID) == "" {
-				continue
-			}
-			seen[r.ID] = instanceViewFromRow(r)
-		}
+	rows, err := s.store.ListInstances(ctx)
+	if err != nil {
+		return nil
 	}
-	if cfg := runtimeConfig(); cfg != nil {
-		for _, inst := range cfg.Instances {
-			id := strings.TrimSpace(inst.ID)
-			if id == "" {
-				continue
-			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = instanceViewFromConfig(inst, "yaml")
+	out := make([]dto.FlashbackInstanceView, 0, len(rows))
+	for _, r := range rows {
+		if strings.TrimSpace(r.ID) == "" {
+			continue
 		}
-	}
-	out := make([]dto.FlashbackInstanceView, 0, len(seen))
-	for _, v := range seen {
-		out = append(out, v)
+		out = append(out, instanceViewFromRow(r))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -165,6 +152,16 @@ func flashbackAllowedArgKey(key string) bool {
 	return false
 }
 
+func flashbackArgIsSecret(key string) bool {
+	key = strings.TrimSpace(key)
+	for _, it := range flashbackEditableArgs {
+		if it.Key == key {
+			return it.Secret
+		}
+	}
+	return false
+}
+
 // CloudSettings 返回可编辑的多云参数（含当前生效值）。key 与 Hub global_args 一致。
 func (s *FlashbackImpl) CloudSettings(ctx context.Context) dto.FlashbackCloudSettings {
 	out := dto.FlashbackCloudSettings{
@@ -186,6 +183,9 @@ func (s *FlashbackImpl) CloudSettings(ctx context.Context) dto.FlashbackCloudSet
 	}
 	for _, meta := range flashbackEditableArgs {
 		val, src := lookupFlashbackArgSource(ctx, meta.Key)
+		if meta.Secret {
+			val = ""
+		}
 		out.Args = append(out.Args, dto.FlashbackArgItem{
 			Key: meta.Key, Value: val, Description: meta.Description, Secret: meta.Secret, Source: src,
 		})
@@ -215,7 +215,18 @@ func (s *FlashbackImpl) SaveCloudSettings(ctx context.Context, req *dto.Flashbac
 				}
 			}
 		}
-		if err := s.store.UpsertArg(ctx, key, item.Value, desc); err != nil {
+		val := item.Value
+		if flashbackArgIsSecret(key) {
+			if strings.TrimSpace(val) == "" {
+				continue
+			}
+			sealed, err := secrypto.MustSeal(val)
+			if err != nil {
+				return nil, err
+			}
+			val = sealed
+		}
+		if err := s.store.UpsertArg(ctx, key, val, desc); err != nil {
 			return nil, err
 		}
 	}
@@ -235,6 +246,8 @@ func FlashbackBootstrap(ctx context.Context) error {
 			flashbackBootstrapErr = err
 			return
 		}
+		flashbackMigrateSecrets(ctx)
+		flashbackEnsureDefaultAdmin(ctx)
 		n, err := flashbackStore.FailStuckRunning(ctx, "进程退出后任务未跑完（重启、部署或资源不足），无法续跑")
 		if err != nil {
 			log.Warn("flashback fail stuck running", zap.Error(err))

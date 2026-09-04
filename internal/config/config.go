@@ -123,7 +123,9 @@ type FlashbackSettings struct {
 	HuaweiSecretAccessKey string   `json:"huawei_secret_access_key" yaml:"huawei_secret_access_key" mapstructure:"huawei_secret_access_key"`
 	AWSAccessKeyID        string   `json:"aws_access_key_id" yaml:"aws_access_key_id" mapstructure:"aws_access_key_id"`
 	AWSSecretAccessKey    string   `json:"aws_secret_access_key" yaml:"aws_secret_access_key" mapstructure:"aws_secret_access_key"`
-	// Args 兼容 Hub global_args 原 key，例如 flashback_tencent_secret_id。
+	// DataKey 32 字节 hex/base64。默认为空，第一次启动自动生成并写回配置；环境变量 FLASHBACK_DATA_KEY 优先。
+	DataKey string `json:"data_key" yaml:"data_key" mapstructure:"data_key"`
+	// Args 多云参数兜底。
 	Args map[string]string `json:"args" yaml:"args" mapstructure:"args"`
 }
 
@@ -190,7 +192,6 @@ func intString(n int) string {
 type SvrConfig struct {
 	HTTP      HTTPConfig        `json:"http" yaml:"http" mapstructure:"http"`
 	DB        DBConfig          `json:"db" yaml:"db" mapstructure:"db"`
-	Instances []InstanceConfig  `json:"instances" yaml:"instances" mapstructure:"instances"`
 	Flashback FlashbackSettings `json:"flashback" yaml:"flashback" mapstructure:"flashback"`
 }
 

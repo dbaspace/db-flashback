@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"db-flashback/internal/crypto"
 )
 
 // ArgRow 多云参数一行。
@@ -31,7 +33,11 @@ func (s Store) GetArg(ctx context.Context, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return val, nil
+	plain, err := crypto.Open(val)
+	if err != nil {
+		return "", fmt.Errorf("解密参数 %s: %w", key, err)
+	}
+	return plain, nil
 }
 
 func (s Store) ListArgs(ctx context.Context) ([]ArgRow, error) {

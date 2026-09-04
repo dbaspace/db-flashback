@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"db-flashback/internal/crypto"
 )
 
 const flashbackInstancesDDL = `
@@ -82,10 +84,40 @@ FROM tbl_flashback_instances WHERE id=$1`, id).Scan(
 	if err != nil {
 		return nil, err
 	}
+	if err := decodeInstanceSecrets(r); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
 func (s Store) ListInstances(ctx context.Context) ([]InstanceRow, error) {
+	db := s.db()
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT id, db_type, host, port, db_user, password, sslmode, vendor, cloud_instance_id, region, remark, ssh_user, ssh_port
+FROM tbl_flashback_instances ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InstanceRow
+	for rows.Next() {
+		var r InstanceRow
+		if err := rows.Scan(&r.ID, &r.DBType, &r.Host, &r.Port, &r.User, &r.Password, &r.SSLMode,
+			&r.Vendor, &r.CloudInstanceID, &r.Region, &r.Remark, &r.SSHUser, &r.SSHPort); err != nil {
+			return nil, err
+		}
+		if err := decodeInstanceSecrets(&r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s Store) ListInstancesRaw(ctx context.Context) ([]InstanceRow, error) {
 	db := s.db()
 	if db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -123,6 +155,9 @@ func (s Store) UpsertInstance(ctx context.Context, r InstanceRow) error {
 	}
 	if r.Port <= 0 {
 		r.Port = 5432
+	}
+	if err := encodeInstanceSecrets(&r); err != nil {
+		return err
 	}
 	_, err := db.ExecContext(ctx, `
 INSERT INTO tbl_flashback_instances (
@@ -164,5 +199,42 @@ func (s Store) DeleteInstance(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("instance not found: %s", id)
 	}
+	return nil
+}
+
+func encodeInstanceSecrets(r *InstanceRow) error {
+	if r == nil {
+		return nil
+	}
+	user, err := crypto.MustSeal(strings.TrimSpace(r.User))
+	if err != nil {
+		return fmt.Errorf("加密实例用户: %w", err)
+	}
+	r.User = user
+	if strings.TrimSpace(r.Password) == "" {
+		return nil
+	}
+	pass, err := crypto.MustSeal(r.Password)
+	if err != nil {
+		return fmt.Errorf("加密实例密码: %w", err)
+	}
+	r.Password = pass
+	return nil
+}
+
+func decodeInstanceSecrets(r *InstanceRow) error {
+	if r == nil {
+		return nil
+	}
+	user, err := crypto.Open(r.User)
+	if err != nil {
+		return fmt.Errorf("解密实例用户: %w", err)
+	}
+	r.User = user
+	pass, err := crypto.Open(r.Password)
+	if err != nil {
+		return fmt.Errorf("解密实例密码: %w", err)
+	}
+	r.Password = pass
 	return nil
 }

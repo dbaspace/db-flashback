@@ -29,6 +29,8 @@ func init() {
 	viper.Set("hostname", hostname)
 }
 
+func configFilePath() string { return cfg }
+
 func readConfig() string {
 	slog.Info("config file", "path", cfg)
 	if _, err := os.Stat(cfg); err != nil {

@@ -55,16 +55,7 @@ func lookupConfiguredInstance(instanceID string) (config.InstanceConfig, error) 
 	if row, err := flashbackStore.GetInstance(context.Background(), id); err == nil && row != nil {
 		return instanceRowToConfig(*row), nil
 	}
-	cfg := runtimeConfig()
-	if cfg == nil {
-		return config.InstanceConfig{}, fmt.Errorf("config not initialized")
-	}
-	for _, inst := range cfg.Instances {
-		if strings.TrimSpace(inst.ID) == id {
-			return inst, nil
-		}
-	}
-	return config.InstanceConfig{}, fmt.Errorf("instance not found: %s", id)
+	return config.InstanceConfig{}, fmt.Errorf("instance not found: %s（请先在「实例地址」登记）", id)
 }
 
 func lookupConfiguredInstanceByHostPort(host string, port int) (config.InstanceConfig, error) {
@@ -83,20 +74,7 @@ func lookupConfiguredInstanceByHostPort(host string, port int) (config.InstanceC
 			return found[0], nil
 		}
 	}
-	cfg := runtimeConfig()
-	if cfg == nil {
-		return config.InstanceConfig{}, fmt.Errorf("instance not found")
-	}
-	var found []config.InstanceConfig
-	for _, inst := range cfg.Instances {
-		if strings.EqualFold(strings.TrimSpace(inst.Host), host) && inst.Port == port {
-			found = append(found, inst)
-		}
-	}
-	if len(found) != 1 {
-		return config.InstanceConfig{}, fmt.Errorf("instance not found")
-	}
-	return found[0], nil
+	return config.InstanceConfig{}, fmt.Errorf("instance not found")
 }
 
 func instanceToDomain(inst config.InstanceConfig) *ent.DomainInstance {
@@ -329,6 +307,9 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func resolveCdcOperator(c *gin.Context) string {
+	if name := CurrentUsername(c); name != "" {
+		return name
+	}
 	if c == nil {
 		return "system"
 	}

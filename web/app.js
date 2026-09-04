@@ -17,13 +17,93 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; }
 }
 
+let currentUser = "";
+let currentIsAdmin = false;
+let currentPerms = {};
+let pageCatalog = [
+  { key: "dashboard", name: "仪表盘" },
+  { key: "tasks", name: "闪回任务" },
+  { key: "history", name: "历史记录" },
+  { key: "instances", name: "实例地址" },
+  { key: "ops", name: "运维中心" },
+  { key: "tools", name: "工具与集成" },
+];
+
+function rememberUser(me, fallback) {
+  currentUser = (me && me.username) || fallback || "";
+  currentIsAdmin = !!(me && me.is_admin) || String(currentUser).toLowerCase() === "admin";
+  currentPerms = (me && me.perms) || {};
+  if (me && me.pages && me.pages.length) pageCatalog = me.pages;
+}
+
+function clearUser() {
+  currentUser = "";
+  currentIsAdmin = false;
+  currentPerms = {};
+}
+
+function routePage(name) {
+  if (name === "new") return "tasks";
+  if (name === "task" || name === "history") return "history";
+  if (name === "cloud") return "ops";
+  if (name === "selftest") return "tools";
+  return name;
+}
+
+function canView(page) {
+  if (currentIsAdmin) return true;
+  if (page === "users") return false;
+  const lv = currentPerms[page];
+  return lv === "view" || lv === "operate";
+}
+
+function canOperate(page) {
+  if (currentIsAdmin) return true;
+  if (page === "users") return false;
+  return currentPerms[page] === "operate";
+}
+
+function applyNav() {
+  document.querySelectorAll("#nav a").forEach((a) => {
+    const page = a.dataset.page || routePage(a.dataset.route);
+    a.hidden = page === "users" ? !currentIsAdmin : !canView(page);
+  });
+  const search = document.getElementById("top-search");
+  if (search) search.hidden = !canView("history");
+}
+
+function denyHTML() {
+  return `<section class="card"><div class="empty">没有该页面权限，请联系管理员授权。</div></section>`;
+}
+
+function firstAllowedHash() {
+  const order = [
+    ["dashboard", "#/"],
+    ["tasks", "#/new"],
+    ["history", "#/history"],
+    ["instances", "#/instances"],
+    ["ops", "#/ops"],
+    ["tools", "#/tools"],
+  ];
+  for (const [p, h] of order) if (canView(p)) return h;
+  if (currentIsAdmin) return "#/users";
+  return "";
+}
+
 async function api(path, opts) {
   const res = await fetch(path, {
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(opts && opts.headers) },
     ...opts,
   });
   let data = {};
-  try { data = await res.json(); } catch (_) { throw new Error("接口返回不是 JSON"); }
+  try { data = await res.json(); } catch (_) {
+    throw new Error(res.ok ? "接口返回不是 JSON" : "接口 HTTP " + res.status);
+  }
+  if (res.status === 401 && !String(path).includes("/auth/login") && !String(path).includes("/auth/me")) {
+    clearUser();
+    showLogin();
+  }
   if (!res.ok || (data.code && data.code !== "0")) {
     throw new Error((data.details && data.details.err) || data.message || "请求失败");
   }
@@ -33,6 +113,21 @@ async function api(path, opts) {
 function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function formControl(form, name) {
+  if (!form) return null;
+  return form.elements.namedItem(name) || form.querySelector('[name="' + name + '"]');
+}
+
+function formValue(form, name) {
+  const el = formControl(form, name);
+  return el && "value" in el ? String(el.value) : "";
+}
+
+function setFormValue(form, name, value) {
+  const el = formControl(form, name);
+  if (el && "value" in el) el.value = value == null ? "" : String(value);
 }
 
 function fmtTime(v) {
@@ -57,14 +152,17 @@ function route() {
   if (path === "/history") return { name: "history", q };
   if (path === "/instances") return { name: "instances", q };
   if (path === "/ops" || path === "/cloud") return { name: "ops", q };
+  if (path === "/users") return { name: "users", q };
   if (path === "/tools" || path === "/selftest") return { name: "tools", q };
-  if (path === "/new" || path === "/") return { name: "new", q };
-  return { name: "new", q };
+  if (path === "/new") return { name: "new", q };
+  if (path === "/" || path === "/dashboard") return { name: "dashboard", q };
+  return { name: "dashboard", q };
 }
 
 function setNav(name) {
   const map = { task: "history", cloud: "ops", selftest: "tools", list: "history" };
   const key = map[name] || name;
+  applyNav();
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === key));
 }
 
@@ -84,6 +182,10 @@ async function pingHealth() {
 async function refreshRecent() {
   const box = document.getElementById("recent-tasks");
   if (!box) return;
+  if (!canView("history")) {
+    box.innerHTML = `<div class="meta">无历史权限</div>`;
+    return;
+  }
   try {
     const data = await api("/api/v1/flashback/tasks?page=1&page_size=5");
     const list = (data && data.list) || [];
@@ -211,6 +313,195 @@ const PDU_SCENE_CN = {
   drop_table: "DROP TABLE",
 };
 
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return v + " B";
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + " KB";
+  if (v < 1024 * 1024 * 1024) return (v / (1024 * 1024)).toFixed(1) + " MB";
+  return (v / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+}
+
+function fmtDelta(pct, emptyText) {
+  if (pct == null || Number.isNaN(Number(pct))) return emptyText || "暂无对比";
+  const n = Number(pct);
+  const sign = n > 0 ? "+" : "";
+  return (n >= 0 ? "↑ " : "↓ ") + sign + n.toFixed(0) + "%";
+}
+
+function dashStatus(st) {
+  const key = String(st || "").toLowerCase();
+  if (key === "succeeded") return `<span class="badge succeeded">✓ 完成</span>`;
+  if (key === "running") return `<span class="badge running">执行中</span>`;
+  if (key === "failed") return `<span class="badge failed">✕ 失败</span>`;
+  if (key === "pending") return `<span class="badge pending">排队</span>`;
+  return badge(st);
+}
+
+async function renderDashboard() {
+  setNav("dashboard");
+  app.innerHTML = `<section class="card"><div class="empty">加载仪表盘…</div></section>`;
+  let data = null;
+  let instances = [];
+  try {
+    data = await api("/api/v1/flashback/dashboard");
+  } catch (err) {
+    app.innerHTML = `<section class="card"><div class="err">${esc(err.message)}</div></section>`;
+    return;
+  }
+  try { instances = await loadInstances(); } catch (_) { instances = []; }
+  const days = data.days || [];
+  const maxBar = Math.max(1, ...days.map((d) => (d.succeeded || 0) + (d.failed || 0)));
+  const bars = days.map((d) => {
+    const ok = d.succeeded || 0;
+    const fail = d.failed || 0;
+    const okH = Math.round((ok / maxBar) * 100);
+    const failH = Math.round((fail / maxBar) * 100);
+    return `<div class="dash-col">
+      <div class="stack">
+        ${ok ? `<div class="seg ok" style="height:${okH}%"></div>` : `<div class="seg ok" style="height:2%;opacity:.15"></div>`}
+        ${fail ? `<div class="seg fail" style="height:${failH}%"></div>` : ""}
+      </div>
+      <div class="lab">${esc(d.label)}</div>
+    </div>`;
+  }).join("");
+  const weekOk = days.reduce((s, d) => s + (d.succeeded || 0), 0);
+  const weekFail = days.reduce((s, d) => s + (d.failed || 0), 0);
+  const recent = data.recent || [];
+  const rows = recent.map((t) => {
+    const tables = (t.tables && t.tables.length) ? t.tables.join(", ") : "整库";
+    return `<tr>
+      <td><a href="#/tasks/${encodeURIComponent(t.id)}">${esc(fmtTime(t.created_at))}</a></td>
+      <td>${esc(tables)}</td>
+      <td>${esc(t.database || "—")}</td>
+      <td>${dashStatus(t.status)}</td>
+    </tr>`;
+  }).join("");
+  const st = data.storage || {};
+  const hp = data.health || {};
+  const pct = st.used_percent || 0;
+  const pending = data.pending || 0;
+  const rate = data.success_rate || 0;
+  const todayFoot = data.yesterday_count > 0 || data.today_count > 0
+    ? `较昨日 ${fmtDelta(data.today_delta_pct, "持平")}` : "今日暂无任务";
+  const weekFoot = data.prev_week_wal_bytes > 0 || data.week_wal_bytes > 0
+    ? `较上周 ${fmtDelta(data.week_delta_pct, "持平")}` : "近7日暂无恢复量";
+  const tableHints = [...new Set(recent.flatMap((t) => t.tables || []).filter(Boolean))].slice(0, 12);
+  const canRun = canOperate("tasks");
+  app.innerHTML = `<div class="dash">
+    <div class="dash-kpis">
+      <section class="card dash-kpi"><h3>总闪回次数</h3><div class="num">${esc(data.total || 0)}</div><p class="foot ${(data.today_delta_pct || 0) >= 0 ? "up" : "down"}">${esc(todayFoot)}</p></section>
+      <section class="card dash-kpi"><h3>成功</h3><div class="num">${esc(data.succeeded || 0)}</div><p class="foot up">✓ 成功率 ${esc(rate)}%</p></section>
+      <section class="card dash-kpi"><h3>恢复数据量</h3><div class="num">${esc(fmtBytes(data.wal_bytes))}</div><p class="foot ${(data.week_delta_pct || 0) >= 0 ? "up" : "down"}">${esc(weekFoot)}</p></section>
+      <section class="card dash-kpi"><h3>待处理任务</h3><div class="num">${esc(pending)}</div><p class="foot ${pending ? "down" : "up"}">${pending ? "↓ 队列积压" : "队列空闲"}</p></section>
+    </div>
+    <div class="dash-mid">
+      <section class="card dash-card">
+        <div class="dash-hd">
+          <h3><span class="ico">📈</span>闪回趋势 (近7日)</h3>
+          <span class="dash-hint">按日统计</span>
+        </div>
+        <div class="dash-bars">${bars || `<div class="empty">近7日暂无任务</div>`}</div>
+        <div class="dash-legend"><span><i class="ok"></i>成功 ${esc(weekOk)}</span><span><i class="fail"></i>失败 ${esc(weekFail)}</span></div>
+      </section>
+      <section class="card dash-card">
+        <div class="dash-hd"><h3><span class="ico">🗄️</span>存储与健康</h3></div>
+        <div class="dash-health">
+          <div class="dash-ring" style="--pct:${esc(pct)}"><span>${esc(pct)}%</span></div>
+          <div class="dash-store">
+            <div><span>磁盘已用</span><b>${esc(fmtBytes(st.used_bytes))} / ${esc(fmtBytes(st.total_bytes))}</b></div>
+            <div><span>工作目录</span><b>${esc(fmtBytes(st.workdir_bytes))}</b></div>
+            <div><span>磁盘空闲</span><b>${esc(fmtBytes(st.free_bytes))}</b></div>
+          </div>
+        </div>
+        <div class="dash-vitals">
+          <div><span>连接数</span><b>${esc(hp.open_conns || 0)}${hp.max_conns ? " / " + hp.max_conns : ""}</b></div>
+          <div><span>平均响应</span><b>${esc(hp.ping_ms || 0)} ms</b></div>
+          <div><span>闪回可用</span><b>${hp.available !== false ? `<span class="badge succeeded">✓ 正常</span>` : `<span class="badge failed">异常</span>`}</b></div>
+        </div>
+      </section>
+    </div>
+    <div class="dash-bot">
+      <section class="card dash-card">
+        <div class="dash-hd">
+          <h3><span class="ico">☰</span>最近闪回任务</h3>
+          ${canView("history") ? `<a class="dash-hint" href="#/history">查看全部</a>` : `<span class="dash-hint">最近 ${recent.length} 条</span>`}
+        </div>
+        ${rows ? `<table class="data dash-table"><thead><tr><th>时间</th><th>表</th><th>数据库</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty">还没有闪回任务。</div>`}
+      </section>
+      <section class="card dash-card dash-quick">
+        <div class="dash-hd"><h3><span class="ico">⚡</span>快速闪回</h3></div>
+        <form id="dash-quick">
+          <div class="field"><label>数据库类型</label>
+            <div class="chips dash-engine" id="dash-engine">
+              <button type="button" class="chip on" data-db="postgres">PG</button>
+              <button type="button" class="chip" data-db="mysql">MySQL</button>
+            </div>
+            <input type="hidden" name="db_type" value="postgres">
+          </div>
+          <div class="field"><label>实例</label>
+            <select name="instance_id">${instanceOptions(instances.filter((it) => !String(it.db_type || "").toLowerCase().includes("mysql")))}</select>
+          </div>
+          <div class="field"><label>数据库</label><input name="database" placeholder="业务库名" autocomplete="off"></div>
+          <div class="field"><label>表</label>
+            <input name="table" list="dash-tables" placeholder="schema.table，可空=整库" autocomplete="off">
+            <datalist id="dash-tables">${tableHints.map((t) => `<option value="${esc(t)}">`).join("")}</datalist>
+          </div>
+          <div class="field"><label>回退到</label>
+            <select name="ago">
+              <option value="5">5 分钟前</option>
+              <option value="10" selected>10 分钟前</option>
+              <option value="30">30 分钟前</option>
+              <option value="60">1 小时前</option>
+              <option value="360">6 小时前</option>
+            </select>
+          </div>
+          <button class="btn go" type="submit" ${canRun ? "" : "disabled"}>↺ 执行闪回</button>
+        </form>
+        <p class="dash-note">${canRun ? "将自动匹配最近备份点，并进入预检查。" : "当前为查看权限，不能发起闪回。"}</p>
+        <div id="dash-quick-msg"></div>
+      </section>
+    </div>
+  </div>`;
+
+  const form = document.getElementById("dash-quick");
+  const syncInst = () => {
+    const mysql = formValue(form, "db_type") === "mysql";
+    const list = instances.filter((it) => {
+      const isMy = String(it.db_type || "").toLowerCase().includes("mysql");
+      return mysql ? isMy : !isMy;
+    });
+    form.instance_id.innerHTML = instanceOptions(list);
+  };
+  document.getElementById("dash-engine").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      document.getElementById("dash-engine").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+      setFormValue(form, "db_type", btn.dataset.db);
+      syncInst();
+    };
+  });
+  form.onsubmit = (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("dash-quick-msg");
+    if (!canRun) { msg.innerHTML = `<div class="err">没有闪回任务操作权限</div>`; return; }
+    const instanceId = formValue(form, "instance_id").trim();
+    const database = formValue(form, "database").trim();
+    if (!instanceId) { msg.innerHTML = `<div class="err">请先选择实例</div>`; return; }
+    if (!database) { msg.innerHTML = `<div class="err">请填写数据库名</div>`; return; }
+    const ago = num(formValue(form, "ago")) || 10;
+    const now = new Date();
+    wizard.form = {
+      engine: "native",
+      instance_id: instanceId,
+      database,
+      tables: parseTables(formValue(form, "table")),
+      target_time: toAPITime(toLocalInput(new Date(now.getTime() - ago * 60 * 1000))),
+    };
+    wizard.step = 1;
+    wizard.precheck = null;
+    location.hash = "#/new";
+  };
+}
+
 async function renderNew() {
   setNav("new");
   let instances = [];
@@ -317,8 +608,9 @@ async function renderNew() {
       </div>
     </form>
     <div class="actions">
-      <button class="btn primary" id="btn-precheck" ${instances.length ? "" : "disabled"}>下一步：预检查</button>
+      <button class="btn primary" id="btn-precheck" ${instances.length && canOperate("tasks") ? "" : "disabled"}>下一步：预检查</button>
     </div>
+    ${canOperate("tasks") ? "" : `<p class="lead">当前为查看权限，不能发起预检查或创建任务。</p>`}
     <div id="form-msg"></div>
   </section>`;
 
@@ -341,7 +633,7 @@ async function renderNew() {
       return;
     }
     box.innerHTML = `<strong>${esc(it.id)}</strong> · ${esc(it.db_type || "")} · ${esc(it.host)}:${esc(it.port)} · 用户 ${esc(it.user || "—")}
-      <div class="meta">来源 ${esc(it.source === "db" ? "地址库" : "YAML")} · vendor=${esc(it.vendor || "自建")} · ${esc(it.cloud_instance_id || "")} ${esc(it.region || "")}</div>`;
+      <div class="meta">vendor=${esc(it.vendor || "自建")} · ${esc(it.cloud_instance_id || "")} ${esc(it.region || "")}</div>`;
     form.cloud_instance_id.value = it.cloud_instance_id || "";
     form.cloud_region.value = it.region || "";
     syncReplicaTip();
@@ -412,7 +704,7 @@ async function renderNew() {
     document.getElementById("fld-archive").style.display = needWal ? "" : "none";
     document.getElementById("fld-disk").style.display = scene === "drop_table" ? "" : "none";
     document.getElementById("fld-exclude").style.display = scene === "drop_table" ? "" : "none";
-    document.getElementById("btn-precheck").disabled = pdu ? false : !instances.length;
+    document.getElementById("btn-precheck").disabled = !canOperate("tasks") || (pdu ? false : !instances.length);
     syncReplicaTip();
   };
   document.getElementById("engine-chips").onclick = (ev) => {
@@ -618,27 +910,27 @@ async function renderInstances() {
     <td>${esc(it.host)}:${esc(it.port)}</td>
     <td>${esc(it.user || "—")}</td>
     <td>${esc(it.vendor || "自建")}</td>
-    <td>${badge(it.source || "yaml")}</td>
+    <td><span class="badge db">地址库</span></td>
     <td>
-      <button class="btn ghost small" data-edit="${esc(it.id)}">编辑</button>
-      ${it.source === "db" ? `<button class="btn danger small" data-del="${esc(it.id)}">删除</button>` : `<span class="meta">YAML</span>`}
+      ${canOperate("instances") ? `<button class="btn ghost small" data-edit="${esc(it.id)}">编辑</button>
+      <button class="btn danger small" data-del="${esc(it.id)}">删除</button>` : `<span class="meta">查看</span>`}
     </td>
   </tr>`).join("");
   app.innerHTML = `<section class="card">
     <div class="toolbar">
       <div class="grow"><h2>实例地址管理</h2><p class="lead">闪回任务只从这里选地址，不在任务页手填主机端口。</p></div>
     </div>
-    ${list.length ? `<table class="data"><thead><tr><th>ID</th><th>类型</th><th>地址</th><th>用户</th><th>厂商</th><th>来源</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty">还没有地址。下面表单添加一条后即可被任务引用。</div>`}
-    <h3 style="margin:22px 0 10px">新增 / 覆盖到地址库</h3>
+    ${list.length ? `<table class="data"><thead><tr><th>ID</th><th>类型</th><th>地址</th><th>用户</th><th>厂商</th><th>来源</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty">还没有地址。${canOperate("instances") ? "下面表单添加一条后即可被任务引用。" : ""}</div>`}
+    ${canOperate("instances") ? `<h3 style="margin:22px 0 10px">新增 / 覆盖到地址库</h3>
     <form id="inst-form" class="grid">
-      <div class="field"><label>ID *</label><input name="id" required placeholder="pg-prod"></div>
+      <div class="field"><label>ID *</label><input name="instance_id" required placeholder="必填，例如 pg-1-ab" autocomplete="off"></div>
       <div class="field"><label>类型</label>
         <select name="db_type"><option value="postgres">PostgreSQL</option><option value="mysql">MySQL</option></select>
       </div>
-      <div class="field"><label>主机 *</label><input name="host" required placeholder="10.100.112.17"></div>
+      <div class="field"><label>主机 *</label><input name="host" required placeholder="例如 10.0.0.1"></div>
       <div class="field"><label>端口</label><input name="port" type="number" value="5432"></div>
-      <div class="field"><label>用户</label><input name="user" placeholder="postgres"></div>
-      <div class="field"><label>密码</label><input name="password" type="password" placeholder="更新时留空则保留原密码"></div>
+      <div class="field"><label>用户</label><input name="user" placeholder="例如 postgres"></div>
+      <div class="field"><label>密码</label><input name="password" type="password" placeholder="更新时留空则保留原密码" autocomplete="new-password"></div>
       <div class="field"><label>厂商</label>
         <select name="vendor">
           <option value="">自建</option>
@@ -648,33 +940,37 @@ async function renderInstances() {
           <option value="aws">AWS</option>
         </select>
       </div>
-      <div class="field"><label>cloud_instance_id</label><input name="cloud_instance_id" placeholder="postgres-xxxx"></div>
-      <div class="field"><label>region</label><input name="region" placeholder="ap-guangzhou"></div>
+      <div class="field"><label>cloud_instance_id</label><input name="cloud_instance_id" placeholder="云实例 ID，可空"></div>
+      <div class="field"><label>region</label><input name="region" placeholder="例如 ap-guangzhou"></div>
       <div class="field"><label>备注</label><input name="remark"></div>
       <div class="field"><label>SSH 用户</label><input name="ssh_user" placeholder="远程互信，可空=库用户"></div>
       <div class="field"><label>SSH 端口</label><input name="ssh_port" type="number" placeholder="22"></div>
     </form>
-    <div class="actions"><button class="btn primary" id="btn-inst-save">保存到数据库</button></div>
+    <div class="actions"><button class="btn primary" id="btn-inst-save">保存到数据库</button></div>` : `<p class="lead" style="margin-top:16px">当前为查看权限，不能新增或修改实例。</p>`}
     <div id="inst-msg"></div>
   </section>`;
 
   const fill = (it) => {
     const f = document.getElementById("inst-form");
-    f.id.value = it.id || "";
-    f.db_type.value = (it.db_type || "").includes("mysql") ? "mysql" : "postgres";
-    f.host.value = it.host || "";
-    f.port.value = it.port || 5432;
-    f.user.value = it.user || "";
-    f.password.value = "";
-    f.vendor.value = it.vendor || "";
-    f.cloud_instance_id.value = it.cloud_instance_id || "";
-    f.region.value = it.region || "";
-    f.remark.value = it.remark || "";
-    f.ssh_user.value = it.ssh_user || "";
-    f.ssh_port.value = it.ssh_port || "";
+    if (!f) return;
+    setFormValue(f, "instance_id", it.id || "");
+    setFormValue(f, "db_type", (it.db_type || "").includes("mysql") ? "mysql" : "postgres");
+    setFormValue(f, "host", it.host || "");
+    setFormValue(f, "port", it.port || 5432);
+    setFormValue(f, "user", it.user || "");
+    setFormValue(f, "password", "");
+    setFormValue(f, "vendor", it.vendor || "");
+    setFormValue(f, "cloud_instance_id", it.cloud_instance_id || "");
+    setFormValue(f, "region", it.region || "");
+    setFormValue(f, "remark", it.remark || "");
+    setFormValue(f, "ssh_user", it.ssh_user || "");
+    setFormValue(f, "ssh_port", it.ssh_port || "");
   };
   app.querySelectorAll("[data-edit]").forEach((btn) => {
-    btn.onclick = () => fill(list.find((x) => x.id === btn.dataset.edit) || {});
+    btn.onclick = () => {
+      const id = btn.getAttribute("data-edit") || "";
+      fill(list.find((x) => x.id === id) || { id });
+    };
   });
   app.querySelectorAll("[data-del]").forEach((btn) => {
     btn.onclick = async () => {
@@ -687,24 +983,28 @@ async function renderInstances() {
       }
     };
   });
-  document.getElementById("btn-inst-save").onclick = async () => {
+  const instSave = document.getElementById("btn-inst-save");
+  if (instSave) instSave.onclick = async () => {
     const f = document.getElementById("inst-form");
-    const fd = new FormData(f);
     const body = {
-      id: String(fd.get("id") || "").trim(),
-      db_type: String(fd.get("db_type") || "postgres"),
-      host: String(fd.get("host") || "").trim(),
-      port: Number(fd.get("port") || 0),
-      user: String(fd.get("user") || "").trim(),
-      password: String(fd.get("password") || ""),
-      vendor: String(fd.get("vendor") || ""),
-      cloud_instance_id: String(fd.get("cloud_instance_id") || "").trim(),
-      region: String(fd.get("region") || "").trim(),
-      remark: String(fd.get("remark") || "").trim(),
-      ssh_user: String(fd.get("ssh_user") || "").trim(),
-      ssh_port: Number(fd.get("ssh_port") || 0),
+      id: formValue(f, "instance_id").trim(),
+      db_type: formValue(f, "db_type") || "postgres",
+      host: formValue(f, "host").trim(),
+      port: Number(formValue(f, "port") || 0),
+      user: formValue(f, "user").trim(),
+      password: formValue(f, "password"),
+      vendor: formValue(f, "vendor"),
+      cloud_instance_id: formValue(f, "cloud_instance_id").trim(),
+      region: formValue(f, "region").trim(),
+      remark: formValue(f, "remark").trim(),
+      ssh_user: formValue(f, "ssh_user").trim(),
+      ssh_port: Number(formValue(f, "ssh_port") || 0),
     };
     const msg = document.getElementById("inst-msg");
+    if (!body.id) {
+      msg.innerHTML = `<div class="err">ID 必填</div>`;
+      return;
+    }
     try {
       await api("/api/v1/flashback/instances/" + encodeURIComponent(body.id), { method: "PUT", body: JSON.stringify(body) });
       renderInstances();
@@ -895,19 +1195,20 @@ async function renderOps() {
     const vendors = (settings.vendors || []).map((v) => `<div class="check">${badge(v.configured ? "passed" : "failed")}<div><strong>${esc(v.name)}</strong><div class="mono">${esc(v.id_key)}</div></div></div>`).join("");
     const fields = (settings.args || []).map((a) => `<div class="field">
       <label>${esc(a.description || a.key)} · ${esc(sourceLabel(a.source))}</label>
-      <input name="${esc(a.key)}" type="${a.secret ? "password" : "text"}" value="${esc(a.value)}" autocomplete="off">
+      <input name="${esc(a.key)}" type="${a.secret ? "password" : "text"}" value="${esc(a.value)}" placeholder="${a.secret ? "库中加密存储，留空保留" : ""}" autocomplete="off">
     </div>`).join("");
     const allows = (settings.offline_allow_paths || []).join("、") || "未配置（将使用默认 /tmp /data /Users）";
     app.innerHTML = `<section class="card">
       <h2>运维中心 · 多云密钥</h2>
-      <p class="lead">保存到 tbl_flashback_args，立即生效。</p>
+      <p class="lead">密钥类写入表前加密。保存到 tbl_flashback_args，立即生效。密钥留空表示保留原值。</p>
       <div class="info">PDU 离线白名单 offline_allow_paths：${esc(allows)}</div>
       <div class="checks" style="margin:12px 0">${vendors}</div>
       <form id="cloud-form" class="grid">${fields}</form>
-      <div class="actions"><button class="btn primary" id="btn-cloud-save">保存到数据库</button></div>
+      ${canOperate("ops") ? `<div class="actions"><button class="btn primary" id="btn-cloud-save">保存到数据库</button></div>` : `<p class="lead">当前为查看权限，不能修改运维参数。</p>`}
       <div id="cloud-msg"></div>
     </section>`;
-    document.getElementById("btn-cloud-save").onclick = async () => {
+    const cloudSave = document.getElementById("btn-cloud-save");
+    if (cloudSave) cloudSave.onclick = async () => {
       const fd = new FormData(document.getElementById("cloud-form"));
       const args = (settings.args || []).map((a) => ({ key: a.key, value: String(fd.get(a.key) || ""), description: a.description }));
       try {
@@ -920,6 +1221,119 @@ async function renderOps() {
   } catch (err) {
     app.innerHTML = `<section class="card"><div class="err">${esc(err.message)}</div></section>`;
   }
+}
+
+async function renderUsers() {
+  setNav("users");
+  app.innerHTML = `<section class="card"><div class="empty">加载登录用户…</div></section>`;
+  let list = [];
+  try { list = await api("/api/v1/flashback/auth/users") || []; } catch (err) {
+    app.innerHTML = `<section class="card"><div class="err">${esc(err.message)}</div></section>`;
+    return;
+  }
+  const rows = list.map((u) => {
+    const admin = !!(u.is_admin || String(u.username || "").toLowerCase() === "admin");
+    const role = admin ? `<span class="badge db">管理员</span>` : `<span class="badge">普通用户</span>`;
+    const self = String(u.username || "").toLowerCase() === String(currentUser || "").toLowerCase();
+    let act = "";
+    const on = u.enabled !== false;
+    const locked = !admin && !!u.locked;
+    let st;
+    if (admin || (on && !locked)) st = `<span class="badge passed">启用</span>`;
+    else if (locked) st = `<span class="badge failed">锁定</span>`;
+    else st = `<span class="badge failed">禁用</span>`;
+    if (admin) act = `<span class="meta">不可操作</span>`;
+    else if (!currentIsAdmin) act = `<span class="meta">无权限</span>`;
+    else {
+      act = `<button class="btn ghost small" data-perm-user="${esc(u.username)}">授权</button>`;
+      if (locked) act += ` <button class="btn ghost small" data-unlock-user="${esc(u.username)}">解锁</button>`;
+      if (on) act += ` <button class="btn ghost small" data-disable-user="${esc(u.username)}">禁用</button>`;
+      else act += ` <button class="btn ghost small" data-enable-user="${esc(u.username)}">启用</button>`;
+      if (self) act += ` <span class="meta">当前账号</span>`;
+      else act += ` <button class="btn danger small" data-del-user="${esc(u.username)}">删除</button>`;
+    }
+    return `<tr>
+      <td>${esc(u.username)}</td>
+      <td>${role}</td>
+      <td>${st}</td>
+      <td>${esc(fmtTime(u.created_at))}</td>
+      <td>${esc(fmtTime(u.updated_at))}</td>
+      <td>${act}</td>
+    </tr>`;
+  }).join("");
+  const addForm = currentIsAdmin ? `<h3 style="margin:22px 0 10px">添加用户</h3>
+    <p class="lead">新账号为普通用户，不能操作管理员 admin。</p>
+    <form id="user-form" class="grid">
+      <div class="field"><label>用户名 *</label><input name="username" required autocomplete="off" placeholder="字母数字、._-"></div>
+      <div class="field"><label>密码 *</label><input name="password" type="password" required autocomplete="new-password" placeholder="至少 6 位"></div>
+    </form>
+    <div class="actions"><button class="btn primary" id="btn-user-add">添加用户</button></div>` : `<p class="lead" style="margin-top:16px">普通用户只能改自己的密码，不能添加或删除账号，也不能操作 admin。</p>`;
+  app.innerHTML = `<section class="card">
+    <div class="toolbar">
+      <div class="grow"><h2>登录用户</h2><p class="lead">admin 可授权页面，启用或禁用普通账号。普通用户连续输错密码 3 次会锁定，需管理员解锁后才能登录。</p></div>
+    </div>
+    ${list.length ? `<table class="data"><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建</th><th>更新</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty">还没有用户。</div>`}
+    ${addForm}
+    <div id="user-msg"></div>
+  </section>`;
+  const addBtn = document.getElementById("btn-user-add");
+  if (addBtn) addBtn.onclick = async () => {
+    const f = document.getElementById("user-form");
+    const msg = document.getElementById("user-msg");
+    const username = formValue(f, "username").trim();
+    const password = formValue(f, "password");
+    if (!username) { msg.innerHTML = `<div class="err">用户名必填</div>`; return; }
+    try {
+      await api("/api/v1/flashback/auth/users", { method: "POST", body: JSON.stringify({ username, password }) });
+      renderUsers();
+    } catch (err) {
+      msg.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+    }
+  };
+  app.querySelectorAll("[data-perm-user]").forEach((btn) => {
+    btn.onclick = () => openPermModal(list.find((x) => x.username === btn.dataset.permUser) || { username: btn.dataset.permUser, perms: {} });
+  });
+  const setEnabled = async (name, enabled) => {
+    try {
+      await api("/api/v1/flashback/auth/users/" + encodeURIComponent(name) + "/status", {
+        method: "PUT",
+        body: JSON.stringify({ enabled }),
+      });
+      renderUsers();
+    } catch (err) {
+      document.getElementById("user-msg").innerHTML = `<div class="err">${esc(err.message)}</div>`;
+    }
+  };
+  app.querySelectorAll("[data-disable-user]").forEach((btn) => {
+    btn.onclick = () => {
+      if (!confirm("禁用账号 " + btn.dataset.disableUser + " ？禁用后无法登录。")) return;
+      setEnabled(btn.dataset.disableUser, false);
+    };
+  });
+  app.querySelectorAll("[data-enable-user]").forEach((btn) => {
+    btn.onclick = () => setEnabled(btn.dataset.enableUser, true);
+  });
+  app.querySelectorAll("[data-unlock-user]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("/api/v1/flashback/auth/users/" + encodeURIComponent(btn.dataset.unlockUser) + "/unlock", { method: "PUT", body: "{}" });
+        renderUsers();
+      } catch (err) {
+        document.getElementById("user-msg").innerHTML = `<div class="err">${esc(err.message)}</div>`;
+      }
+    };
+  });
+  app.querySelectorAll("[data-del-user]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm("删除登录账号 " + btn.dataset.delUser + " ？")) return;
+      try {
+        await api("/api/v1/flashback/auth/users/" + encodeURIComponent(btn.dataset.delUser), { method: "DELETE" });
+        renderUsers();
+      } catch (err) {
+        document.getElementById("user-msg").innerHTML = `<div class="err">${esc(err.message)}</div>`;
+      }
+    };
+  });
 }
 
 async function renderTools() {
@@ -939,7 +1353,8 @@ async function renderTools() {
         <select name="output_kind"><option value="flashback">flashback</option><option value="original">original</option></select>
       </div>
     </form>
-    <div class="actions"><button class="btn primary" id="btn-st">开始自测</button></div>
+    <div class="actions"><button class="btn primary" id="btn-st" ${canOperate("tools") ? "" : "disabled"}>开始自测</button></div>
+    ${canOperate("tools") ? "" : `<p class="lead">当前为查看权限，不能发起自测。</p>`}
     <div id="st-msg"></div><div id="st-box"></div>
   </section>`;
   document.getElementById("btn-st").onclick = async (ev) => {
@@ -967,11 +1382,26 @@ async function renderTools() {
 async function render() {
   stopPoll();
   sqlPage = 1;
+  applyNav();
   const r = route();
-  if (r.name === "new") await renderNew();
+  const page = routePage(r.name);
+  const allowed = r.name === "users" ? currentIsAdmin : canView(page);
+  if (!allowed) {
+    const next = firstAllowedHash();
+    if (next && location.hash !== next) {
+      location.hash = next;
+      return;
+    }
+    app.innerHTML = denyHTML();
+    refreshRecent();
+    return;
+  }
+  if (r.name === "dashboard") await renderDashboard();
+  else if (r.name === "new") await renderNew();
   else if (r.name === "history") await renderHistory();
   else if (r.name === "instances") await renderInstances();
   else if (r.name === "ops") await renderOps();
+  else if (r.name === "users") await renderUsers();
   else if (r.name === "tools") await renderTools();
   else if (r.name === "task") await renderTask(r.id);
   refreshRecent();
@@ -983,7 +1413,155 @@ document.getElementById("top-search").onsubmit = (ev) => {
   location.hash = "#/history?keyword=" + encodeURIComponent(String(q || "").trim());
 };
 
-window.addEventListener("hashchange", render);
-pingHealth();
-setInterval(pingHealth, 15000);
-render();
+function showLogin() {
+  document.getElementById("login-gate").hidden = false;
+  document.querySelector(".app").hidden = true;
+  document.getElementById("pwd-modal").hidden = true;
+  const perm = document.getElementById("perm-modal");
+  if (perm) perm.hidden = true;
+  document.getElementById("user-box").hidden = true;
+}
+
+function showApp() {
+  document.getElementById("login-gate").hidden = true;
+  document.querySelector(".app").hidden = false;
+  const box = document.getElementById("user-box");
+  box.hidden = !currentUser;
+  document.getElementById("user-name").textContent = currentUser ? (currentUser + (currentIsAdmin ? " · 管理员" : " · 普通用户")) : "";
+  applyNav();
+}
+
+async function fetchMe() {
+  try {
+    const me = await api("/api/v1/flashback/auth/me");
+    rememberUser(me, "");
+  } catch (_) {
+    clearUser();
+  }
+  return currentUser;
+}
+
+document.getElementById("login-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = ev.currentTarget;
+  const msg = document.getElementById("login-msg");
+  const btn = document.getElementById("btn-login");
+  btn.disabled = true;
+  msg.innerHTML = "";
+  try {
+    const me = await api("/api/v1/flashback/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: formValue(f, "username").trim(),
+        password: formValue(f, "password"),
+      }),
+    });
+    rememberUser(me, formValue(f, "username").trim());
+    setFormValue(f, "password", "");
+    showApp();
+    render();
+  } catch (err) {
+    msg.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById("btn-logout").onclick = async () => {
+  try { await api("/api/v1/flashback/auth/logout", { method: "POST", body: "{}" }); } catch (_) {}
+  clearUser();
+  showLogin();
+};
+
+function openPermModal(user) {
+  const modal = document.getElementById("perm-modal");
+  const fields = document.getElementById("perm-fields");
+  const msg = document.getElementById("perm-msg");
+  document.getElementById("perm-user").textContent = user.username || "";
+  msg.innerHTML = "";
+  const perms = user.perms || {};
+  fields.innerHTML = pageCatalog.map((p) => {
+    const cur = perms[p.key] || "";
+    return `<div class="field wide"><label>${esc(p.name)}</label>
+      <div class="chips">
+        <label class="chip ${cur === "" ? "on" : ""}"><input type="radio" name="perm_${esc(p.key)}" value="" ${cur === "" ? "checked" : ""}> 无</label>
+        <label class="chip ${cur === "view" ? "on" : ""}"><input type="radio" name="perm_${esc(p.key)}" value="view" ${cur === "view" ? "checked" : ""}> 查看</label>
+        <label class="chip ${cur === "operate" ? "on" : ""}"><input type="radio" name="perm_${esc(p.key)}" value="operate" ${cur === "operate" ? "checked" : ""}> 操作</label>
+      </div>
+    </div>`;
+  }).join("");
+  fields.querySelectorAll("input[type=radio]").forEach((el) => {
+    el.onchange = () => {
+      const name = el.name;
+      fields.querySelectorAll('input[name="' + name + '"]').forEach((r) => r.closest(".chip").classList.toggle("on", r.checked));
+    };
+  });
+  modal.hidden = false;
+}
+
+document.getElementById("btn-perm-cancel").onclick = () => {
+  document.getElementById("perm-modal").hidden = true;
+};
+document.getElementById("perm-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const username = document.getElementById("perm-user").textContent.trim();
+  const msg = document.getElementById("perm-msg");
+  const perms = {};
+  pageCatalog.forEach((p) => {
+    const picked = document.querySelector('input[name="perm_' + p.key + '"]:checked');
+    if (picked && picked.value) perms[p.key] = picked.value;
+  });
+  try {
+    await api("/api/v1/flashback/auth/users/" + encodeURIComponent(username) + "/perms", {
+      method: "PUT",
+      body: JSON.stringify({ perms }),
+    });
+    document.getElementById("perm-modal").hidden = true;
+    renderUsers();
+  } catch (err) {
+    msg.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+};
+
+document.getElementById("btn-pwd").onclick = () => {
+  document.getElementById("pwd-form").reset();
+  document.getElementById("pwd-msg").innerHTML = "";
+  document.getElementById("pwd-modal").hidden = false;
+};
+document.getElementById("btn-pwd-cancel").onclick = () => {
+  document.getElementById("pwd-modal").hidden = true;
+};
+document.getElementById("pwd-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = ev.currentTarget;
+  const msg = document.getElementById("pwd-msg");
+  const a = formValue(f, "new_password");
+  const b = formValue(f, "new_password2");
+  if (a !== b) {
+    msg.innerHTML = `<div class="err">两次输入的新密码不一致</div>`;
+    return;
+  }
+  try {
+    await api("/api/v1/flashback/auth/password", {
+      method: "PUT",
+      body: JSON.stringify({ old_password: formValue(f, "old_password"), new_password: a }),
+    });
+    document.getElementById("pwd-modal").hidden = true;
+  } catch (err) {
+    msg.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+};
+
+async function boot() {
+  pingHealth();
+  setInterval(pingHealth, 15000);
+  window.addEventListener("hashchange", () => { if (currentUser) render(); });
+  if (await fetchMe()) {
+    showApp();
+    render();
+    return;
+  }
+  showLogin();
+}
+
+boot();

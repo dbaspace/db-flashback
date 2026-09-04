@@ -27,6 +27,32 @@ func Resp(w http.ResponseWriter, data any) {
 	jsonResp(w, data, http.StatusOK)
 }
 
+func Resp401Error(w http.ResponseWriter, err error) {
+	slog.Debug("response 401 error", slog.Any("error", err))
+	reqID := w.Header().Get(HTTP_REQUEST_ID_KEY)
+	eq := errors.ErrUnauthorized()
+	if err != nil {
+		eq.SetError(err)
+	}
+	if reqID != "" {
+		eq.Details["request_id"] = reqID
+	}
+	jsonResp(w, eq, http.StatusUnauthorized)
+}
+
+func Resp403Error(w http.ResponseWriter, err error) {
+	slog.Debug("response 403 error", slog.Any("error", err))
+	reqID := w.Header().Get(HTTP_REQUEST_ID_KEY)
+	eq := errors.ErrForbidden()
+	if err != nil {
+		eq.SetError(err)
+	}
+	if reqID != "" {
+		eq.Details["request_id"] = reqID
+	}
+	jsonResp(w, eq, http.StatusForbidden)
+}
+
 func Resp400Error(w http.ResponseWriter, err error) {
 	slog.Debug("response 400 error", slog.Any("error", err))
 	reqID := w.Header().Get(HTTP_REQUEST_ID_KEY)

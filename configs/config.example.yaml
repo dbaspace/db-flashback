@@ -9,7 +9,7 @@ http:
     level: info
     format: text
 
-# 本项目任务表（tbl_flashback_*）
+# 本项目任务元库（tbl_flashback_*）。目标实例在控制台「实例地址」维护，不写在这里。
 db:
   host: 127.0.0.1
   port: 5432
@@ -18,34 +18,9 @@ db:
   dbname: db_flashback
   sslmode: disable
 
-# instance_id 必须等于这里的 id
-instances:
-  - id: pg-self
-    db_type: postgres
-    host: 127.0.0.1
-    port: 5432
-    user: postgres
-    password: change-me
-    vendor: ""
-    cloud_instance_id: ""
-    region: ""
-  - id: mysql-self
-    db_type: mysql
-    host: 127.0.0.1
-    port: 3306
-    user: root
-    password: change-me
-  - id: pg-tencent
-    db_type: postgres
-    host: 10.0.0.1
-    port: 5432
-    user: postgres
-    password: change-me
-    vendor: tencent
-    cloud_instance_id: postgres-xxxx
-    region: ap-guangzhou
-
 flashback:
+  # 默认为空。第一次启动会生成 32 字节 hex 并写回本文件；之后不要改。也可用 FLASHBACK_DATA_KEY。
+  data_key: ""
   workdir: /tmp/db-flashback
   # 离线 PDU 把远程库的 PGDATA / WAL 拷到这台服务盘后再解析。默认 {workdir}/offline/{实例}/<时间ms>/
   offline_root: /tmp/db-flashback/offline
